@@ -39,14 +39,17 @@ import {
   subscribeToJobChanges,
   subscribeToBids,
 } from './jobs';
-import { registerForLocalNotifications, notifyLocal } from './notifications';
-import { haversineKm, formatDistance } from './utils';
+import { registerForLocalNotifications, notifyLocal, notifyLocalWithSound } from './notifications';
+import { haversineKm, formatDistance, formatTime } from './utils';
+import SplashScreen from './SplashScreen';
+import RadarView from './RadarView';
 
 export default function App() {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [splashReady, setSplashReady] = useState(false);
 
   // 'landing' | 'loginForm' | 'regRole' | 'regForm' | 'app'
   const [view, setView] = useState('landing');
@@ -127,8 +130,8 @@ export default function App() {
     if (profile.role === 'mechanic') {
       unsubscribe = subscribeToJobChanges({
         onNewOpenJob: (job) => {
-          notifyLocal('New Job Nearby', job.description || 'A driver needs help');
-          loadMechanicData(session.user.id);
+          notifyLocalWithSound('New Job Nearby', job.description || 'A driver needs help');
+          loadMechanicData(session.user.id).catch(() => {});
         },
       });
     } else {
@@ -136,16 +139,16 @@ export default function App() {
         onNewBid: (bid) => {
           const isMine = myRequestsRef.current.some((j) => j.id === bid.job_id);
           if (isMine) {
-            notifyLocal('New Bid Received', 'A mechanic placed a bid on your request.');
-            loadDriverData(session.user.id);
+            notifyLocalWithSound('New Bid Received', 'A mechanic placed a bid on your request.');
+            loadDriverData(session.user.id).catch(() => {});
           }
         },
       });
       const unsubJobs = subscribeToJobChanges({
         onJobUpdate: (job) => {
           if (job.driver_id !== session.user.id) return;
-          notifyLocal('Job Update', `Your request is now ${job.status.replace('_', ' ')}.`);
-          loadDriverData(session.user.id);
+          notifyLocalWithSound('Job Update', `Your request is now ${job.status.replace('_', ' ')}.`);
+          loadDriverData(session.user.id).catch(() => {});
         },
       });
       unsubscribe = () => {
@@ -179,6 +182,18 @@ export default function App() {
       if (appTab === 'history') await loadHistory();
     }
     setRefreshing(false);
+  }
+
+  async function refreshLocation() {
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status === 'granted') {
+        const pos = await Location.getCurrentPositionAsync({});
+        setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+      }
+    } catch (e) {
+      console.log('location refresh error', e);
+    }
   }
 
   async function loadDriverData(userId) {
@@ -407,8 +422,16 @@ export default function App() {
         console.log(e);
       }
     })();
-    unsub = subscribeToMessages(chatModal.jobId, (msg) => {
+    unsub = subscribeToMessages(chatModal.jobId, async (msg) => {
       setChatMessages((prev) => [...prev, msg]);
+      if (msg.sender_id !== session?.user?.id) {
+        let senderName = 'Someone';
+        try {
+          const { data } = await supabase.from('users').select('name').eq('id', msg.sender_id).single();
+          if (data?.name) senderName = data.name;
+        } catch (e) { /* ignore */ }
+        notifyLocalWithSound('New Message', `${senderName}: ${msg.content}`);
+      }
     });
     return () => unsub && unsub();
   }, [chatModal.visible, chatModal.jobId]);
@@ -449,6 +472,10 @@ export default function App() {
     }
     return jobs;
   }, [openJobs, sortBy, vehicleFilter, coords]);
+
+  if (!splashReady) {
+    return <SplashScreen onFinish={() => setSplashReady(true)} />;
+  }
 
   if (loading) {
     return (
@@ -751,6 +778,14 @@ export default function App() {
                       <Text style={[styles.vehBtnText, vehicle === 'car' && styles.vehBtnTextActive]}>🚗 Car</Text>
                     </TouchableOpacity>
                   </View>
+                  <View style={styles.locStatusRow}>
+                    <Text style={styles.locStatusText}>
+                      {coords ? `GPS: ${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)}` : 'GPS: ACQUIRING...'}
+                    </Text>
+                    <TouchableOpacity style={styles.locRefreshBtn} onPress={refreshLocation}>
+                      <Text style={styles.locRefreshText}>REFRESH</Text>
+                    </TouchableOpacity>
+                  </View>
                   <Text style={styles.darkLabel}>LOCATION</Text>
                   <TextInput
                     style={styles.darkInput}
@@ -975,6 +1010,8 @@ export default function App() {
                   ))}
                 </View>
 
+                <RadarView jobs={sortedOpenJobs} coords={coords} />
+
                 {sortedOpenJobs.length === 0 ? (
                   <Text style={styles.emptyHint}>Scanning area...</Text>
                 ) : (
@@ -1128,33 +1165,38 @@ export default function App() {
 
       {/* ================= CHAT MODAL ================= */}
       <Modal visible={chatModal.visible} animationType="slide" onRequestClose={closeChat}>
-        <SafeAreaView style={styles.container}>
-          <View style={styles.header}>
-            <Text style={styles.plateText} numberOfLines={1}>
+        <SafeAreaView style={styles.chatContainer}>
+          <View style={styles.chatHeader}>
+            <Text style={styles.chatHeaderTitle} numberOfLines={1}>
               {chatModal.otherName}
             </Text>
             <TouchableOpacity onPress={closeChat}>
-              <Text style={styles.navLink}>Close</Text>
+              <Text style={styles.chatCloseText}>CLOSE</Text>
             </TouchableOpacity>
           </View>
-          <ScrollView style={{ flex: 1, padding: 14 }}>
+          <ScrollView style={styles.chatScroll} contentContainerStyle={{ padding: 14 }}>
             {chatMessages.length === 0 ? (
-              <Text style={styles.emptyHint}>No messages yet - say hello.</Text>
+              <Text style={styles.chatEmpty}>No messages yet - say hello.</Text>
             ) : (
-              chatMessages.map((m) => (
-                <View
-                  key={m.id}
-                  style={[styles.chatBubble, m.sender_id === session?.user?.id ? styles.chatBubbleMine : styles.chatBubbleTheirs]}
-                >
-                  <Text style={styles.chatText}>{m.content}</Text>
-                </View>
-              ))
+              chatMessages.map((m) => {
+                const isMine = m.sender_id === session?.user?.id;
+                return (
+                    <View
+                      key={m.id}
+                      style={[styles.chatBubble, isMine ? styles.chatBubbleMine : styles.chatBubbleTheirs]}
+                    >
+                      <Text style={[styles.chatText, isMine ? styles.chatTextMine : styles.chatTextTheirs]}>{m.content}</Text>
+                      <Text style={[styles.chatTime, isMine ? styles.chatTimeMine : styles.chatTimeTheirs]}>{formatTime(m.created_at)}</Text>
+                    </View>
+                );
+              })
             )}
           </ScrollView>
           <View style={styles.chatInputRow}>
             <TextInput
-              style={[styles.input, { flex: 1, marginBottom: 0 }]}
+              style={styles.chatInput}
               placeholder="Type a message..."
+              placeholderTextColor="#888"
               value={chatInput}
               onChangeText={setChatInput}
             />
@@ -1268,6 +1310,10 @@ const styles = StyleSheet.create({
   vehBtnActive: { backgroundColor: '#F2A71B', borderColor: '#F2A71B' },
   vehBtnText: { color: '#FFF', fontWeight: 'bold' },
   vehBtnTextActive: { color: '#191A16' },
+  locStatusRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  locStatusText: { color: '#888', fontSize: 10, fontWeight: 'bold', letterSpacing: 0.5 },
+  locRefreshBtn: { borderWidth: 1, borderColor: '#3D3F35', borderRadius: 4, paddingHorizontal: 10, paddingVertical: 4 },
+  locRefreshText: { color: '#F2A71B', fontSize: 10, fontWeight: 'bold', letterSpacing: 1 },
 
   photoPickBtn: { borderWidth: 1, borderColor: '#3D3F35', borderRadius: 6, padding: 10, marginBottom: 10, alignItems: 'center' },
   photoPickText: { color: '#F2A71B', fontWeight: 'bold', fontSize: 13 },
@@ -1297,9 +1343,40 @@ const styles = StyleSheet.create({
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(25,26,22,0.6)', justifyContent: 'center', padding: 20 },
 
+  chatContainer: { flex: 1, backgroundColor: '#121212' },
+  chatHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingBottom: 14,
+    paddingTop: 50,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(242,167,27,0.15)',
+    backgroundColor: '#121212',
+  },
+  chatHeaderTitle: { fontWeight: 'bold', fontSize: 16, color: '#EFECE1', letterSpacing: 1 },
+  chatCloseText: { color: '#F2A71B', fontWeight: 'bold', fontSize: 14, letterSpacing: 1 },
+  chatScroll: { flex: 1, backgroundColor: '#121212' },
+  chatEmpty: { color: '#666', fontStyle: 'italic', marginBottom: 10, textAlign: 'center', marginTop: 20 },
+  chatInput: {
+    flex: 1,
+    backgroundColor: '#1A1A1A',
+    borderWidth: 1,
+    borderColor: '#3D3F35',
+    color: '#FFF',
+    borderRadius: 6,
+    padding: 10,
+    marginBottom: 0,
+  },
   chatBubble: { maxWidth: '80%', padding: 10, borderRadius: 10, marginBottom: 8 },
   chatBubbleMine: { backgroundColor: '#F2A71B', alignSelf: 'flex-end' },
-  chatBubbleTheirs: { backgroundColor: '#F1EFE7', alignSelf: 'flex-start' },
-  chatText: { color: '#191A16', fontSize: 14 },
-  chatInputRow: { flexDirection: 'row', gap: 8, padding: 14, borderTopWidth: 1, borderTopColor: '#DDD', backgroundColor: '#C7C4B8' },
+  chatBubbleTheirs: { backgroundColor: '#1A1A1A', alignSelf: 'flex-start', borderWidth: 1, borderColor: '#333' },
+  chatText: { fontSize: 14 },
+  chatTextMine: { color: '#191A16' },
+  chatTextTheirs: { color: '#EFECE1' },
+  chatTime: { fontSize: 9, marginTop: 4, textAlign: 'right' },
+  chatTimeMine: { color: 'rgba(25,26,22,0.6)' },
+  chatTimeTheirs: { color: '#888' },
+  chatInputRow: { flexDirection: 'row', gap: 8, padding: 14, borderTopWidth: 1, borderTopColor: '#333', backgroundColor: '#121212' },
 });

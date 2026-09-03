@@ -7,7 +7,7 @@ import { Platform } from 'react-native';
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
-    shouldPlaySound: false,
+    shouldPlaySound: true,
     shouldSetBadge: false,
   }),
 });
@@ -30,13 +30,17 @@ export async function registerForLocalNotifications() {
   return true;
 }
 
-export async function notifyLocal(title, body) {
+export async function notifyLocal(title, body, sound = false) {
   try {
     await Notifications.scheduleNotificationAsync({
-      content: { title, body },
-      trigger: null, // fire immediately
+      content: { title, body, sound: sound ? 'default' : undefined },
+      trigger: null,
     });
   } catch (e) {
     console.log('notifyLocal failed', e);
   }
+}
+
+export async function notifyLocalWithSound(title, body) {
+  return notifyLocal(title, body, true);
 }
