@@ -594,7 +594,7 @@ export default function App() {
             if (!session) setView('landing');
           }}
         >
-          <View style={styles.dot} />
+          <Image source={require('./assets/icon.png')} style={styles.logoImage} />
           <Text style={styles.plateText} numberOfLines={1}>
             MECHGO
           </Text>
@@ -779,6 +779,20 @@ export default function App() {
                 I AM A MECHANIC
               </Text>
               <Text style={styles.roleCardDesc}>Browse live requests & send bids</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.roleCard}
+              onPress={() => {
+                setSelectedRole('tow');
+                setView('regForm');
+              }}
+            >
+              <Text style={styles.roleIcon}>🚨</Text>
+              <Text style={styles.roleCardTitle} numberOfLines={1} adjustsFontSizeToFit>
+                TOW SERVICE
+              </Text>
+              <Text style={styles.roleCardDesc}>Provide towing and recovery services</Text>
             </TouchableOpacity>
 
             <TouchableOpacity onPress={() => setView('landing')}>
@@ -1443,7 +1457,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
-  dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#B03A22', marginRight: 6 },
+  logoImage: { width: 28, height: 28, borderRadius: 6, marginRight: 8 },
   plateText: { fontWeight: 'bold', fontSize: 16, color: '#191A16' },
   navLink: { color: '#3E4F60', fontWeight: 'bold', fontSize: 15 },
   logoutBtn: { padding: 6 },
