@@ -265,6 +265,10 @@ export default function App() {
   }
 
   async function handleRegister() {
+    console.log('=== REGISTER DEBUG ===');
+    console.log('selectedRole:', selectedRole);
+    console.log('perKmCharge:', perKmCharge);
+    
     if (!name.trim() || !phone.trim() || !email.trim() || !password) return Alert.alert('Error', 'Please fill in all fields.');
     if ((selectedRole === 'mechanic' || selectedRole === 'tow') && !perKmCharge) {
       return Alert.alert('Error', 'Please enter per km charge');
@@ -283,6 +287,7 @@ export default function App() {
         userData.per_km_charge = Number(perKmCharge);
       }
       
+      console.log('Registering user with data:', userData);
       await signUp(userData);
       Alert.alert('Success', 'Account created successfully!');
     } catch (err) { Alert.alert('Registration Error', err.message); setLoading(false); }
