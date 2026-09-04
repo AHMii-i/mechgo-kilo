@@ -25,16 +25,30 @@ export async function signUp({ email, password, role, name, phone, per_km_charge
   if (authError) throw authError;
 
   if (authData?.user) {
-    const { error: profileError } = await supabase.from('users').insert({
+    const profilePayload = {
       id: authData.user.id,
       role,
       name,
       phone,
       per_km_charge: Number(per_km_charge),
-    });
-    if (profileError) throw profileError;
+    };
+    
+    const { data: profileData, error: profileError } = await supabase
+      .from('users')
+      .insert(profilePayload)
+      .select()
+      .single();
+    
+    if (profileError) {
+      console.error('Profile insert failed:', profileError);
+      throw new Error(`Profile creation failed: ${profileError.message}`);
+    }
+    
+    console.log('Profile created successfully:', profileData);
+    return authData;
   }
-  return authData;
+  
+  throw new Error('User creation failed - no user data returned');
 }
 
 export async function signIn({ email, password }) {
