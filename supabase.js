@@ -14,12 +14,11 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   },
 });
 
-export async function signUp({ email, password, role, name, phone }) {
+export async function signUp({ email, password, role, name, phone, per_km_charge = 0 }) {
   const { data: authData, error: authError } = await supabase.auth.signUp({
     email,
     password,
     options: {
-      // Use a regular web URL instead of a custom scheme
       redirectTo: 'https://mechgo-app.com',
     },
   });
@@ -31,6 +30,7 @@ export async function signUp({ email, password, role, name, phone }) {
       role,
       name,
       phone,
+      per_km_charge: Number(per_km_charge),
     });
     if (profileError) throw profileError;
   }
