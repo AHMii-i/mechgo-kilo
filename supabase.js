@@ -77,3 +77,39 @@ export async function uploadJobPhoto(fileName, uri) {
     .getPublicUrl(fullName);
   return urlData.publicUrl;
 }
+
+export async function updateMechanicAvailability(userId, isAvailable, location = null) {
+  const updateData = {
+    is_available: isAvailable,
+    last_active_at: new Date().toISOString(),
+  };
+  if (location) {
+    updateData.last_location = location;
+  }
+  const { error } = await supabase.from('users').update(updateData).eq('id', userId);
+  if (error) throw error;
+}
+
+export async function getAvailableMechanics(lat, lng, radiusKm = 2, serviceType = 'mechanic') {
+  const { data, error } = await supabase
+    .from('users')
+    .select('id, name, phone, rating, last_location, avatar_url, is_tow_provider')
+    .eq('role', 'mechanic')
+    .eq('is_available', true);
+  if (error) throw error;
+  
+  let filtered = data.filter(m => {
+    if (!m.last_location) return false;
+    const dist = haversineKm(lat, lng, m.last_location.lat, m.last_location.lng);
+    return dist !== null && dist <= radiusKm;
+  });
+  
+  if (serviceType === 'tow') {
+    filtered = filtered.filter(m => m.is_tow_provider === true);
+  }
+  
+  return filtered.map(m => ({
+    ...m,
+    distance: haversineKm(lat, lng, m.last_location.lat, m.last_location.lng)
+  })).sort((a, b) => a.distance - b.distance);
+}

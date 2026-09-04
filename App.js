@@ -15,6 +15,9 @@ import {
   Modal,
   Image,
   Linking,
+  MapView,
+  Marker,
+  Circle,
 } from 'react-native';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
@@ -62,6 +65,13 @@ export default function App() {
   const [jobDesc, setJobDesc] = useState('');
   const [photoUri, setPhotoUri] = useState(null);
   const [needsTowing, setNeedsTowing] = useState(false);
+  const [serviceType, setServiceType] = useState('mechanic');
+  const [isAvailable, setIsAvailable] = useState(false);
+  const [availableMechanics, setAvailableMechanics] = useState([]);
+  const [locationTask, setLocationTask] = useState(null);
+  const [mechanicProfile, setMechanicProfile] = useState(null);
+  const [perKmCharge, setPerKmCharge] = useState('');
+  const [bidPerKmCharge, setBidPerKmCharge] = useState({});
   const [myRequests, setMyRequests] = useState([]);
   const [editingJobId, setEditingJobId] = useState(null);
 
@@ -159,14 +169,31 @@ export default function App() {
   async function handleSession(s) {
     setSession(s);
     if (s?.user) {
-      const p = await getUserProfile(s.user.id);
-      setProfile(p);
+      let p = await getUserProfile(s.user.id);
+      if (!p) {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        p = await getUserProfile(s.user.id);
+      }
+      if (!p) { p = { id: s.user.id, role: 'driver' }; }
+      
+      if (viewRef.current === 'loginForm' && p?.role && p.role !== selectedRoleRef.current) {
+        Alert.alert('ACCESS DENIED 🛑', `This terminal is locked to ${selectedRoleRef.current.toUpperCase()}S.`);
+        await signOut();
+        setSession(null); setProfile(null); setLoading(false);
+        return;
+      }
+
+      setSession(s); setProfile(p);
+      setName(p.name || ''); setPhone(p.phone || ''); setProfilePhotoUri(p.avatar_url || null);
+      setPerKmCharge(p.per_km_charge || '');
+      
       setView('app');
-      if (p?.role === 'mechanic') await loadMechanicData(s.user.id);
+      
+      if (p?.role === 'mechanic' || p?.role === 'tow') await loadMechanicData(s.user.id);
       else await loadDriverData(s.user.id);
     } else {
-      setProfile(null);
-      setView('landing');
+      setSession(null); setProfile(null);
+      if (viewRef.current === 'app' || viewRef.current === 'profile') setView('landing');
     }
     setLoading(false);
   }
@@ -191,7 +218,11 @@ export default function App() {
 
   async function loadMechanicData(userId) {
     try {
-      setOpenJobs(await fetchOpenJobs());
+      const profile = await getUserProfile(userId);
+      setMechanicProfile(profile);
+      
+      const serviceType = profile?.is_tow_provider ? 'both' : 'mechanic';
+      setOpenJobs(await fetchOpenJobsForMechanic(userId, serviceType));
       setMechanicBids(await fetchBidsByMechanic(userId));
     } catch (e) {
       console.log(e);
@@ -227,14 +258,26 @@ export default function App() {
 
   async function handleRegister() {
     if (!name.trim() || !phone.trim() || !email.trim() || !password) return Alert.alert('Error', 'Please fill in all fields.');
+    if ((selectedRole === 'mechanic' || selectedRole === 'tow') && !perKmCharge) {
+      return Alert.alert('Error', 'Please enter per km charge');
+    }
     try {
       setLoading(true);
-      await signUp({ email: email.trim(), password, role: selectedRole, name: name.trim(), phone: phone.trim() });
+      const userData = { 
+        email: email.trim(), 
+        password, 
+        role: selectedRole, 
+        name: name.trim(), 
+        phone: phone.trim() 
+      };
+      
+      if (selectedRole === 'mechanic' || selectedRole === 'tow') {
+        userData.per_km_charge = Number(perKmCharge);
+      }
+      
+      await signUp(userData);
       Alert.alert('Success', 'Account created successfully!');
-    } catch (err) {
-      Alert.alert('Registration Error', err.message);
-      setLoading(false);
-    }
+    } catch (err) { Alert.alert('Registration Error', err.message); setLoading(false); }
   }
 
   // ---------- Photo picker ----------
@@ -248,13 +291,72 @@ export default function App() {
     if (!result.canceled) setPhotoUri(result.assets[0].uri);
   }
 
+  // ---------- Availability / Location Tracking ----------
+  async function toggleAvailability() {
+    if (!coords) return Alert.alert('Error', 'Location not available');
+    try {
+      setLoading(true);
+      const newAvailability = !isAvailable;
+      await updateMechanicAvailability(session.user.id, newAvailability, {
+        lat: coords.lat,
+        lng: coords.lng
+      });
+      setIsAvailable(newAvailability);
+      
+      if (newAvailability) {
+        startLocationTracking();
+      } else {
+        stopLocationTracking();
+      }
+    } catch (err) {
+      Alert.alert('Error', err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function startLocationTracking() {
+    let task;
+    (async () => {
+      try {
+        const { status } = await Location.requestBackgroundPermissionsAsync();
+        if (status !== 'granted') {
+          Alert.alert('Permission needed', 'Background location permission is required for live radar');
+          return;
+        }
+        
+        task = await Location.watchPositionAsync({
+          accuracy: Location.Accuracy.BestForNavigation,
+          distanceInterval: 10,
+          timeInterval: 5000,
+        }, (location) => {
+          const { latitude, longitude } = location.coords;
+          updateMechanicAvailability(session.user.id, true, { lat: latitude, lng: longitude });
+        });
+        
+        setLocationTask(task);
+      } catch (err) {
+        console.log('Location tracking error', err);
+      }
+    })();
+  }
+
+  function stopLocationTracking() {
+    if (locationTask) {
+      locationTask.remove();
+      setLocationTask(null);
+    }
+    updateMechanicAvailability(session.user.id, false);
+  }
+
   // ---------- Create / Edit job ----------
-  function resetJobForm() {
-    setJobDesc('');
-    setLocLabel('');
-    setPhotoUri(null);
-    setNeedsTowing(false);
-    setEditingJobId(null);
+  function resetJobForm() { 
+    setJobDesc(''); 
+    setLocLabel(''); 
+    setPhotoUri(null); 
+    setNeedsTowing(false); 
+    setServiceType('mechanic');
+    setEditingJobId(null); 
   }
 
   function startEditJob(job) {
@@ -263,6 +365,7 @@ export default function App() {
     setLocLabel(job.location?.label || '');
     setJobDesc(job.description || '');
     setNeedsTowing(job.needs_towing || false);
+    setServiceType(job.service_type || 'mechanic');
   }
 
   async function handleCreateJob() {
@@ -276,6 +379,7 @@ export default function App() {
         location: { label: locLabel.trim(), lat: coords?.lat ?? null, lng: coords?.lng ?? null },
         description: jobDesc.trim(),
         needs_towing: needsTowing,
+        service_type: needsTowing ? serviceType : 'mechanic',
       });
       if (photoUri) {
         try {
@@ -306,6 +410,7 @@ export default function App() {
         location: { label: locLabel.trim(), lat: coords?.lat ?? null, lng: coords?.lng ?? null },
         description: jobDesc.trim(),
         needs_towing: needsTowing,
+        service_type: needsTowing ? serviceType : 'mechanic',
       });
       resetJobForm();
       await loadDriverData(session.user.id);
@@ -338,9 +443,17 @@ export default function App() {
   async function handlePlaceBid(jobId) {
     const price = bidPrice[jobId];
     const eta = bidEta[jobId];
-    if (!price || !eta) return Alert.alert('Error', 'Please enter price and ETA.');
+    const perKmCharge = bidPerKmCharge[jobId];
+    
+    if (!price || !eta || !perKmCharge) return Alert.alert('Error', 'Please enter price, ETA and per km charge.');
     try {
-      await placeBid({ job_id: jobId, mechanic_id: session.user.id, price, eta });
+      await placeBid({ 
+        job_id: jobId, 
+        mechanic_id: session.user.id, 
+        price, 
+        eta,
+        per_km_charge: perKmCharge 
+      });
       Alert.alert('Bid Placed', 'Offer sent to driver.');
       loadMechanicData(session.user.id);
     } catch (err) {
@@ -538,6 +651,18 @@ export default function App() {
               </Text>
             </TouchableOpacity>
 
+            <TouchableOpacity
+              style={[styles.secondaryBtn, { backgroundColor: '#D03A27', borderColor: '#191A16' }]}
+              onPress={() => {
+                setSelectedRole('tow');
+                setView('regForm');
+              }}
+            >
+              <Text style={[styles.secondaryBtnText, { color: '#FFF' }]} numberOfLines={1}>
+                JOIN AS TOW SERVICE
+              </Text>
+            </TouchableOpacity>
+
             <View style={styles.divider} />
 
             <Text style={styles.sectionEyebrow} numberOfLines={1}>
@@ -684,7 +809,7 @@ export default function App() {
         {view === 'regForm' && (
           <View style={styles.card}>
             <Text style={styles.formTitle} numberOfLines={1}>
-              {selectedRole === 'mechanic' ? 'MECHANIC REGISTRATION' : 'DRIVER REGISTRATION'}
+              {selectedRole === 'mechanic' ? 'MECHANIC REGISTRATION' : selectedRole === 'tow' ? 'TOW SERVICE REGISTRATION' : 'DRIVER REGISTRATION'}
             </Text>
             <Text style={styles.inputLabel}>FULL NAME / SHOP NAME</Text>
             <TextInput style={styles.input} placeholder="e.g. Ahmed Auto" value={name} onChangeText={setName} />
@@ -700,6 +825,20 @@ export default function App() {
             />
             <Text style={styles.inputLabel}>PASSWORD</Text>
             <TextInput style={styles.input} placeholder="********" secureTextEntry value={password} onChangeText={setPassword} />
+            
+            {(selectedRole === 'mechanic' || selectedRole === 'tow') && (
+              <>
+                <Text style={styles.inputLabel}>PER KM CHARGE (RS)</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="e.g. 50"
+                  keyboardType="numeric"
+                  value={perKmCharge}
+                  onChangeText={setPerKmCharge}
+                />
+              </>
+            )}
+            
             <TouchableOpacity style={styles.primaryBtn} onPress={handleRegister}>
               <Text style={styles.primaryBtnText} numberOfLines={1}>
                 CREATE ACCOUNT
@@ -777,6 +916,27 @@ export default function App() {
                     </TouchableOpacity>
                   </View>
 
+                  {needsTowing && (
+                    <View style={{ flexDirection: 'row', marginHorizontal: 16, marginBottom: 10, gap: 10 }}>
+                      <TouchableOpacity
+                        style={[styles.serviceTypeBtn, serviceType === 'mechanic' && styles.serviceTypeBtnActive]}
+                        onPress={() => setServiceType('mechanic')}
+                      >
+                        <Text style={[styles.serviceTypeText, serviceType === 'mechanic' && styles.serviceTypeTextActive]}>
+                          🔧 MECHANIC + TOW
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.serviceTypeBtn, serviceType === 'tow' && styles.serviceTypeBtnActive]}
+                        onPress={() => setServiceType('tow')}
+                      >
+                        <Text style={[styles.serviceTypeText, serviceType === 'tow' && styles.serviceTypeTextActive]}>
+                          🚨 TOW ONLY
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+
                   {!editingJobId && (
                     <TouchableOpacity style={styles.photoPickBtn} onPress={pickPhoto}>
                       <Text style={styles.photoPickText}>{photoUri ? "📷 Photo Selected" : "📷 Add Photo (optional)"}</Text>
@@ -830,6 +990,35 @@ export default function App() {
                           </View>
                         )}
 
+                        {j.status === 'open' && j.needs_towing && (
+                          <TouchableOpacity
+                            style={[styles.statusBtn, { backgroundColor: '#D03A27', marginTop: 10 }]}
+                            onPress={() => {
+                              Alert.alert(
+                                'Cancel Request',
+                                'Do you want to cancel this request and call a tow service directly?',
+                                [
+                                  { text: 'No', style: 'cancel' },
+                                  { 
+                                    text: 'Yes, Call Tow Service', 
+                                    style: 'destructive',
+                                    onPress: async () => {
+                                      try {
+                                        await cancelJob(j.id);
+                                        Alert.alert('Tow Service', 'Calling nearby tow service...');
+                                      } catch (err) {
+                                        Alert.alert('Error', err.message);
+                                      }
+                                    }
+                                  },
+                                ]
+                              );
+                            }}
+                          >
+                            <Text style={styles.statusBtnText}>🚨 CALL TOW SERVICE</Text>
+                          </TouchableOpacity>
+                        )}
+
                         {['assigned', 'in_progress'].includes(j.status) && acceptedBid && (
                           <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
                             <TouchableOpacity
@@ -855,8 +1044,7 @@ export default function App() {
                                 <View>
                                   <Text style={{ color: '#FFF', fontWeight: 'bold' }}>{b.mechanic?.name}</Text>
                                   <Text style={{ color: '#F2A71B', fontSize: 13 }}>
-                                    Rs {b.price} - {b.eta} min
-                                    {b.mechanic?.rating ? ` - Rating ${b.mechanic.rating}` : ''}
+                                    Rs {b.price} - {b.eta} min - Rs {b.per_km_charge}/km
                                   </Text>
                                 </View>
                                 {j.status === 'open' && (
@@ -932,6 +1120,48 @@ export default function App() {
             <Text style={styles.appTitle}>MECHANIC DASHBOARD</Text>
             {!!profile.rating && <Text style={styles.ratingBadge}>YOUR RATING: {profile.rating} / 5</Text>}
 
+            {/* AVAILABILITY TOGGLE */}
+            <View style={styles.availabilityCard}>
+              <Text style={styles.availabilityTitle}>RADAR STATUS</Text>
+              <TouchableOpacity
+                style={[styles.availabilityBtn, isAvailable && styles.availabilityBtnActive]}
+                onPress={toggleAvailability}
+              >
+                <Text style={[styles.availabilityText, isAvailable && styles.availabilityTextActive]}>
+                  {isAvailable ? '🟢 AVAILABLE NOW' : '🔴 GO OFFLINE'}
+                </Text>
+              </TouchableOpacity>
+              {isAvailable && (
+                <Text style={styles.availabilitySubText}>📍 Sharing location with drivers nearby</Text>
+              )}
+            </View>
+
+            {/* TOW PROVIDER TOGGLE */}
+            <View style={styles.towProviderCard}>
+              <Text style={styles.towProviderTitle}>TOW SERVICE PROVIDER</Text>
+              <TouchableOpacity
+                style={[styles.towProviderBtn, mechanicProfile?.is_tow_provider && styles.towProviderBtnActive]}
+                onPress={async () => {
+                  try {
+                    const { error } = await supabase
+                      .from('users')
+                      .update({ is_tow_provider: !mechanicProfile?.is_tow_provider })
+                      .eq('id', session.user.id);
+                    if (error) throw error;
+                    const updated = await getUserProfile(session.user.id);
+                    setMechanicProfile(updated);
+                    Alert.alert('Updated', 'Tow service status updated');
+                  } catch (err) {
+                    Alert.alert('Error', err.message);
+                  }
+                }}
+              >
+                <Text style={[styles.towProviderText, mechanicProfile?.is_tow_provider && styles.towProviderTextActive]}>
+                  {mechanicProfile?.is_tow_provider ? '🚨 I PROVIDE TOW SERVICE' : '🔧 REGULAR MECHANIC ONLY'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
             <View style={styles.tabRow}>
               <TouchableOpacity
                 style={[styles.tabBtn, appTab === 'active' && styles.tabBtnActive]}
@@ -1006,6 +1236,13 @@ export default function App() {
                             placeholderTextColor="#777"
                             keyboardType="numeric"
                             onChangeText={(val) => setBidEta({ ...bidEta, [j.id]: val })}
+                          />
+                          <TextInput
+                            style={styles.bidInput}
+                            placeholder="Rs/km"
+                            placeholderTextColor="#777"
+                            keyboardType="numeric"
+                            onChangeText={(val) => setBidPerKmCharge({ ...bidPerKmCharge, [j.id]: val })}
                           />
                           <TouchableOpacity style={styles.bidBtn} onPress={() => handlePlaceBid(j.id)}>
                             <Text style={styles.bidBtnText}>BID</Text>
@@ -1297,6 +1534,100 @@ const styles = StyleSheet.create({
   bidBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 12 },
   statusBtn: { flex: 1, padding: 8, borderRadius: 6, alignItems: 'center' },
   statusBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 11 },
+
+  serviceTypeBtn: {
+    flex: 1,
+    backgroundColor: '#181913',
+    borderWidth: 2,
+    borderColor: '#333',
+    borderRadius: 8,
+    padding: 12,
+    alignItems: 'center',
+  },
+  serviceTypeBtnActive: {
+    backgroundColor: '#D03A27',
+    borderColor: '#D03A27',
+  },
+  serviceTypeText: {
+    color: '#888',
+    fontWeight: '900',
+    fontSize: 11,
+    letterSpacing: 1,
+  },
+  serviceTypeTextActive: {
+    color: '#FFF',
+  },
+
+  availabilityCard: {
+    backgroundColor: '#1A1A1A',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 2,
+    borderColor: '#333',
+  },
+  availabilityTitle: {
+    color: '#F5A623',
+    fontSize: 12,
+    fontFamily: 'Montserrat_900Black',
+    letterSpacing: 2,
+    marginBottom: 10,
+  },
+  availabilityBtn: {
+    backgroundColor: '#D03A27',
+    padding: 14,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  availabilityBtnActive: {
+    backgroundColor: '#367C5A',
+  },
+  availabilityText: {
+    color: '#FFF',
+    fontFamily: 'Montserrat_900Black',
+    fontSize: 14,
+    letterSpacing: 1,
+  },
+  availabilitySubText: {
+    color: '#888',
+    fontSize: 11,
+    marginTop: 8,
+    textAlign: 'center',
+  },
+
+  towProviderCard: {
+    backgroundColor: '#1A1A1A',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 2,
+    borderColor: '#333',
+  },
+  towProviderTitle: {
+    color: '#F5A623',
+    fontSize: 12,
+    fontFamily: 'Montserrat_900Black',
+    letterSpacing: 2,
+    marginBottom: 10,
+  },
+  towProviderBtn: {
+    backgroundColor: '#D03A27',
+    padding: 14,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  towProviderBtnActive: {
+    backgroundColor: '#367C5A',
+  },
+  towProviderText: {
+    color: '#FFF',
+    fontFamily: 'Montserrat_900Black',
+    fontSize: 12,
+    letterSpacing: 1,
+  },
+  towProviderTextActive: {
+    color: '#FFF',
+  },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(25,26,22,0.6)', justifyContent: 'center', padding: 20 },
 

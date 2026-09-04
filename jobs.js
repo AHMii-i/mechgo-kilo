@@ -3,10 +3,10 @@ import { supabase } from './supabase';
 
 // ---------- CREATE / READ ----------
 
-export async function createJob({ driver_id, vehicle, location, description, needs_towing = false, photo_url = null }) {
+export async function createJob({ driver_id, vehicle, location, description, needs_towing = false, service_type = 'mechanic', photo_url = null }) {
   const { data, error } = await supabase
     .from('jobs')
-    .insert({ driver_id, vehicle, location, description, status: 'open', needs_towing, photo_url })
+    .insert({ driver_id, vehicle, location, description, status: 'open', needs_towing, service_type, photo_url })
     .select()
     .single();
   if (error) throw error;
@@ -134,13 +134,31 @@ export async function cancelJob(jobId) {
   if (error) throw error;
 }
 
-export async function editJob({ jobId, location, description, vehicle, needs_towing }) {
+export async function editJob({ jobId, location, description, vehicle, needs_towing, service_type }) {
   const { error } = await supabase
     .from('jobs')
-    .update({ location, description, vehicle, needs_towing })
+    .update({ location, description, vehicle, needs_towing, service_type })
     .eq('id', jobId)
     .eq('status', 'open');
   if (error) throw error;
+}
+
+export async function fetchOpenJobsForMechanic(mechanicId, serviceType = 'mechanic') {
+  let query = supabase
+    .from('jobs')
+    .select('*, driver:users!jobs_driver_id_fkey(name, phone)')
+    .eq('status', 'open')
+    .order('created_at', { ascending: false });
+  
+  if (serviceType === 'tow') {
+    query = query.eq('service_type', 'tow');
+  } else {
+    query = query.or(`and(service_type.eq.mechanic,needs_towing.eq.false),and(service_type.eq.mechanic,needs_towing.is.null)`);
+  }
+  
+  const { data, error } = await query;
+  if (error) throw error;
+  return data;
 }
 
 // ---------- PHOTO UPLOAD ----------
