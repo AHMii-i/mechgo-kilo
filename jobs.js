@@ -3,10 +3,10 @@ import { supabase } from './supabase';
 
 // ---------- CREATE / READ ----------
 
-export async function createJob({ driver_id, vehicle, location, description, budget = null, photo_url = null }) {
+export async function createJob({ driver_id, vehicle, location, description, needs_towing = false, photo_url = null }) {
   const { data, error } = await supabase
     .from('jobs')
-    .insert({ driver_id, vehicle, location, description, status: 'open', budget, photo_url })
+    .insert({ driver_id, vehicle, location, description, status: 'open', needs_towing, photo_url })
     .select()
     .single();
   if (error) throw error;
@@ -134,10 +134,10 @@ export async function cancelJob(jobId) {
   if (error) throw error;
 }
 
-export async function editJob({ jobId, location, description, vehicle, budget }) {
+export async function editJob({ jobId, location, description, vehicle, needs_towing }) {
   const { error } = await supabase
     .from('jobs')
-    .update({ location, description, vehicle, budget })
+    .update({ location, description, vehicle, needs_towing })
     .eq('id', jobId)
     .eq('status', 'open');
   if (error) throw error;

@@ -60,8 +60,8 @@ export default function App() {
   const [vehicle, setVehicle] = useState('bike');
   const [locLabel, setLocLabel] = useState('');
   const [jobDesc, setJobDesc] = useState('');
-  const [budget, setBudget] = useState('');
   const [photoUri, setPhotoUri] = useState(null);
+  const [needsTowing, setNeedsTowing] = useState(false);
   const [myRequests, setMyRequests] = useState([]);
   const [editingJobId, setEditingJobId] = useState(null);
 
@@ -76,7 +76,7 @@ export default function App() {
   const [mechanicHistory, setMechanicHistory] = useState([]);
 
   // Sort/filter (mechanic dashboard)
-  const [sortBy, setSortBy] = useState('newest'); // 'newest' | 'distance' | 'budget'
+  const [sortBy, setSortBy] = useState('newest'); // 'newest' | 'distance'
   const [vehicleFilter, setVehicleFilter] = useState('all'); // 'all' | 'bike' | 'car'
   const [coords, setCoords] = useState(null);
 
@@ -252,8 +252,8 @@ export default function App() {
   function resetJobForm() {
     setJobDesc('');
     setLocLabel('');
-    setBudget('');
     setPhotoUri(null);
+    setNeedsTowing(false);
     setEditingJobId(null);
   }
 
@@ -262,7 +262,7 @@ export default function App() {
     setVehicle(job.vehicle);
     setLocLabel(job.location?.label || '');
     setJobDesc(job.description || '');
-    setBudget(job.budget ? String(job.budget) : '');
+    setNeedsTowing(job.needs_towing || false);
   }
 
   async function handleCreateJob() {
@@ -275,7 +275,7 @@ export default function App() {
         vehicle,
         location: { label: locLabel.trim(), lat: coords?.lat ?? null, lng: coords?.lng ?? null },
         description: jobDesc.trim(),
-        budget: budget ? Number(budget) : null,
+        needs_towing: needsTowing,
       });
       if (photoUri) {
         try {
@@ -305,7 +305,7 @@ export default function App() {
         vehicle,
         location: { label: locLabel.trim(), lat: coords?.lat ?? null, lng: coords?.lng ?? null },
         description: jobDesc.trim(),
-        budget: budget ? Number(budget) : null,
+        needs_towing: needsTowing,
       });
       resetJobForm();
       await loadDriverData(session.user.id);
@@ -442,8 +442,6 @@ export default function App() {
         if (db === null) return -1;
         return da - db;
       });
-    } else if (sortBy === 'budget') {
-      jobs.sort((a, b) => (b.budget || 0) - (a.budget || 0));
     } else {
       jobs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
     }
@@ -768,15 +766,16 @@ export default function App() {
                     value={jobDesc}
                     onChangeText={setJobDesc}
                   />
-                  <Text style={styles.darkLabel}>BUDGET (OPTIONAL, RS)</Text>
-                  <TextInput
-                    style={styles.darkInput}
-                    placeholder="e.g. 1500"
-                    placeholderTextColor="#666"
-                    keyboardType="numeric"
-                    value={budget}
-                    onChangeText={setBudget}
-                  />
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginHorizontal: 16, marginTop: 14, marginBottom: 10 }}>
+                    <TouchableOpacity
+                      style={[styles.towingToggle, needsTowing && styles.towingToggleActive]}
+                      onPress={() => setNeedsTowing(!needsTowing)}
+                    >
+                      <Text style={[styles.towingToggleText, needsTowing && styles.towingToggleTextActive]}>
+                        {needsTowing ? '🚨 VEHICLE NEEDS TOWING' : '🔧 ONSITE REPAIR'}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
 
                   {!editingJobId && (
                     <TouchableOpacity style={styles.photoPickBtn} onPress={pickPhoto}>
@@ -811,7 +810,7 @@ export default function App() {
                         </View>
                         <Text style={styles.jobDesc}>{j.description}</Text>
                         <Text style={styles.jobLoc}>📍 {j.location?.label}</Text>
-                        {!!j.budget && <Text style={styles.jobBudget}>Budget: Rs {j.budget}</Text>}
+                        {j.needs_towing && <Text style={styles.jobTowing}>🚨 TOWING REQUIRED</Text>}
                         {!!j.photo_url && <Image source={{ uri: j.photo_url }} style={styles.jobPhoto} />}
 
                         {j.status === 'open' && (
@@ -953,7 +952,7 @@ export default function App() {
                 <Text style={styles.sectionHeading}>LIVE REQUESTS 📡</Text>
 
                 <View style={styles.filterRow}>
-                  {['newest', 'distance', 'budget'].map((s) => (
+                  {['newest', 'distance'].map((s) => (
                     <TouchableOpacity
                       key={s}
                       style={[styles.filterChip, sortBy === s && styles.filterChipActive]}
@@ -991,7 +990,7 @@ export default function App() {
                           📍 {j.location?.label}
                           {formatDistance(dist) ? ` - ${formatDistance(dist)}` : ''}
                         </Text>
-                        {!!j.budget && <Text style={styles.jobBudget}>Budget: Rs {j.budget}</Text>}
+                        {j.needs_towing && <Text style={styles.jobTowing}>🚨 TOWING REQUIRED</Text>}
                         {!!j.photo_url && <Image source={{ uri: j.photo_url }} style={styles.jobPhoto} />}
                         <View style={styles.bidRow}>
                           <TextInput
@@ -1268,6 +1267,10 @@ const styles = StyleSheet.create({
   vehBtnActive: { backgroundColor: '#F2A71B', borderColor: '#F2A71B' },
   vehBtnText: { color: '#FFF', fontWeight: 'bold' },
   vehBtnTextActive: { color: '#191A16' },
+  towingToggle: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#181913', borderWidth: 2, borderColor: '#D03A27', borderRadius: 8, padding: 12, marginHorizontal: 16, marginTop: 14, marginBottom: 10, justifyContent: 'center' },
+  towingToggleActive: { backgroundColor: '#D03A27' },
+  towingToggleText: { color: '#D03A27', fontWeight: '900', fontSize: 12, letterSpacing: 1 },
+  towingToggleTextActive: { color: '#FFF' },
 
   photoPickBtn: { borderWidth: 1, borderColor: '#3D3F35', borderRadius: 6, padding: 10, marginBottom: 10, alignItems: 'center' },
   photoPickText: { color: '#F2A71B', fontWeight: 'bold', fontSize: 13 },
@@ -1281,7 +1284,7 @@ const styles = StyleSheet.create({
   jobPill: { color: '#2F6B4F', fontSize: 11, fontWeight: 'bold' },
   jobDesc: { color: '#DAD8CC', fontSize: 14, marginBottom: 6 },
   jobLoc: { color: '#888', fontSize: 12 },
-  jobBudget: { color: '#F2A71B', fontSize: 12, marginTop: 4 },
+  jobTowing: { color: '#D03A27', fontSize: 11, fontWeight: 'bold', marginTop: 4 },
   emptyHint: { color: '#666', fontStyle: 'italic', marginBottom: 10 },
   bidsContainer: { marginTop: 12, borderTopWidth: 1, borderTopColor: '#333', paddingTop: 10 },
   bidsHeader: { color: '#F2A71B', fontSize: 11, fontWeight: 'bold', marginBottom: 8 },
