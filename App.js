@@ -175,11 +175,16 @@ export default function App() {
     if (s?.user) {
       let p = await getUserProfile(s.user.id);
       if (!p) {
-        await new Promise(resolve => setTimeout(resolve, 1500));
+        await new Promise(resolve => setTimeout(resolve, 2500));
         p = await getUserProfile(s.user.id);
       }
-      if (!p) { p = { id: s.user.id, role: 'driver' }; }
-      
+      if (!p) {
+        Alert.alert('Error', 'Profile not found. Please try again or contact support.');
+        await signOut();
+        setSession(null); setProfile(null); setLoading(false);
+        return;
+      }
+
       if (viewRef.current === 'loginForm' && p?.role && p.role !== selectedRoleRef.current) {
         Alert.alert('ACCESS DENIED 🛑', `This terminal is locked to ${selectedRoleRef.current.toUpperCase()}S.`);
         await signOut();
