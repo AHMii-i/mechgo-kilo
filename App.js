@@ -15,10 +15,8 @@ import {
   Modal,
   Image,
   Linking,
-  MapView,
-  Marker,
-  Circle,
 } from 'react-native';
+import MapView, { Marker, Circle } from 'react-native-maps';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
 import { supabase, signUp, signIn, signOut, getUserProfile, uploadJobPhoto } from './supabase';
