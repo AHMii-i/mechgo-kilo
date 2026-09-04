@@ -53,6 +53,12 @@ export default function App() {
   const [view, setView] = useState('landing');
   const [selectedRole, setSelectedRole] = useState('driver');
 
+  const viewRef = useRef(view);
+  const selectedRoleRef = useRef(selectedRole);
+
+  useEffect(() => { viewRef.current = view; }, [view]);
+  useEffect(() => { selectedRoleRef.current = selectedRole; }, [selectedRole]);
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
