@@ -251,3 +251,123 @@ export function subscribeToBids({ onNewBid } = {}) {
     .subscribe();
   return () => supabase.removeChannel(channel);
 }
+
+// ============================================================
+// TOW PROVIDER FUNCTIONS
+// ============================================================
+
+export async function fetchTowingJobs() {
+  const { data, error } = await supabase
+    .from('jobs')
+    .select('*, driver:users!jobs_driver_id_fkey(name, phone)')
+    .eq('status', 'open')
+    .eq('needs_towing', true)
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return data;
+}
+
+export async function placeTowBid({ job_id, tow_provider_id, price, eta, fleet_vehicle_id }) {
+  const { data, error } = await supabase
+    .from('bids')
+    .insert({ job_id, mechanic_id: tow_provider_id, price, eta, fleet_vehicle_id, is_tow_bid: true })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function fetchTowBidsByProvider(towProviderId) {
+  const { data: bids, error: bidsErr } = await supabase
+    .from('bids')
+    .select('*')
+    .eq('mechanic_id', towProviderId)
+    .eq('is_tow_bid', true)
+    .order('created_at', { ascending: false });
+
+  if (bidsErr) throw bidsErr;
+  if (!bids || bids.length === 0) return [];
+
+  const jobIds = [...new Set(bids.map((b) => b.job_id))];
+  const { data: jobs, error: jobsErr } = await supabase
+    .from('jobs')
+    .select('*, driver:users!jobs_driver_id_fkey(name, phone)')
+    .in('id', jobIds);
+
+  if (jobsErr) throw jobsErr;
+
+  const vehicleIds = [...new Set(bids.map((b) => b.fleet_vehicle_id).filter(Boolean))];
+  let vehiclesMap = {};
+  if (vehicleIds.length > 0) {
+    const { data: vehicles } = await supabase
+      .from('fleet_vehicles')
+      .select('*')
+      .in('id', vehicleIds);
+    vehiclesMap = (vehicles || []).reduce((acc, v) => ({ ...acc, [v.id]: v }), {});
+  }
+
+  return bids
+    .map((bid) => ({
+      ...bid,
+      job: jobs.find((j) => j.id === bid.job_id),
+      fleet_vehicle: vehiclesMap[bid.fleet_vehicle_id] || null,
+    }))
+    .filter(
+      (b) =>
+        b.job &&
+        b.job.accepted_mechanic_id === towProviderId &&
+        ['assigned', 'in_progress', 'en_route', 'arrived_at_pickup', 'in_transit'].includes(b.job.status)
+    );
+}
+
+export async function fetchTowProviderHistory(towProviderId) {
+  const { data: bids, error: bidsErr } = await supabase
+    .from('bids')
+    .select('*')
+    .eq('mechanic_id', towProviderId)
+    .eq('is_tow_bid', true);
+  if (bidsErr) throw bidsErr;
+  if (!bids || bids.length === 0) return [];
+
+  const jobIds = [...new Set(bids.map((b) => b.job_id))];
+  const { data: jobs, error: jobsErr } = await supabase
+    .from('jobs')
+    .select('*, driver:users!jobs_driver_id_fkey(name, phone), ratings(*)')
+    .in('id', jobIds)
+    .eq('status', 'completed');
+  if (jobsErr) throw jobsErr;
+
+  return bids
+    .map((bid) => ({ ...bid, job: jobs.find((j) => j.id === bid.job_id) }))
+    .filter((b) => b.job && b.job.accepted_mechanic_id === towProviderId);
+}
+
+// ---------- FLEET MANAGEMENT ----------
+
+export async function addFleetVehicle({ tow_provider_id, vehicle_type, name, is_available = true }) {
+  const { data, error } = await supabase
+    .from('fleet_vehicles')
+    .insert({ tow_provider_id, vehicle_type, name, is_available })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function fetchFleetVehicles(towProviderId) {
+  const { data, error } = await supabase
+    .from('fleet_vehicles')
+    .select('*')
+    .eq('tow_provider_id', towProviderId)
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteFleetVehicle(vehicleId) {
+  const { error } = await supabase
+    .from('fleet_vehicles')
+    .delete()
+    .eq('id', vehicleId);
+  if (error) throw error;
+}
