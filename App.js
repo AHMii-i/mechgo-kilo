@@ -137,11 +137,20 @@ export default function App() {
     if (!session?.user || !profile) return;
     let unsubscribe;
 
-    if (profile.role === 'mechanic') {
+    if (profile?.role === 'mechanic') {
       unsubscribe = subscribeToJobChanges({
         onNewOpenJob: (job) => {
           notifyLocal('New Job Nearby', job.description || 'A driver needs help');
           loadMechanicData(session.user.id);
+        },
+      });
+    } else if (profile?.role === 'tow' || profile?.role === 'tow_provider') {
+      unsubscribe = subscribeToJobChanges({
+        onNewOpenJob: (job) => {
+          if (job.needs_towing) {
+            notifyLocal('New Tow Job', 'A driver needs towing service');
+            loadTowData(session.user.id);
+          }
         },
       });
     } else {
@@ -184,20 +193,14 @@ export default function App() {
         return;
       }
 
-      if (viewRef.current === 'loginForm' && p?.role && p.role !== selectedRoleRef.current) {
-        Alert.alert('ACCESS DENIED 🛑', `This terminal is locked to ${selectedRoleRef.current.toUpperCase()}S.`);
-        await signOut();
-        setSession(null); setProfile(null); setLoading(false);
-        return;
-      }
-
       setSession(s); setProfile(p);
       setName(p.name || ''); setPhone(p.phone || ''); setProfilePhotoUri(p.avatar_url || null);
       setPerKmCharge(p.per_km_charge || '');
       
       setView('app');
       
-      if (p?.role === 'mechanic' || p?.role === 'tow') await loadMechanicData(s.user.id);
+      if (p?.role === 'mechanic') await loadMechanicData(s.user.id);
+      else if (p?.role === 'tow' || p?.role === 'tow_provider') await loadTowData(s.user.id);
       else await loadDriverData(s.user.id);
     } else {
       setSession(null); setProfile(null);
@@ -270,7 +273,7 @@ export default function App() {
     console.log('perKmCharge:', perKmCharge);
     
     if (!name.trim() || !phone.trim() || !email.trim() || !password) return Alert.alert('Error', 'Please fill in all fields.');
-    if ((selectedRole === 'mechanic' || selectedRole === 'tow') && !perKmCharge) {
+    if ((selectedRole === 'mechanic' || selectedRole === 'tow_provider') && !perKmCharge) {
       return Alert.alert('Error', 'Please enter per km charge');
     }
     try {
@@ -283,7 +286,7 @@ export default function App() {
         phone: phone.trim() 
       };
       
-      if (selectedRole === 'mechanic' || selectedRole === 'tow') {
+      if (selectedRole === 'mechanic' || selectedRole === 'tow_provider') {
         userData.per_km_charge = Number(perKmCharge);
       }
       
@@ -332,12 +335,18 @@ export default function App() {
     let task;
     (async () => {
       try {
-        const { status } = await Location.requestBackgroundPermissionsAsync();
-        if (status !== 'granted') {
-          Alert.alert('Permission needed', 'Background location permission is required for live radar');
-          return;
+        let bgGranted = false;
+        try {
+          const bgStatus = await Location.requestBackgroundPermissionsAsync();
+          bgGranted = bgStatus === 'granted';
+        } catch (e) {
+          console.log('Background permission request failed, falling back to foreground only', e);
         }
-        
+
+        if (!bgGranted) {
+          Alert.alert('Limited Tracking', 'Background location not available. Using foreground tracking while app is open.');
+        }
+
         task = await Location.watchPositionAsync({
           accuracy: Location.Accuracy.BestForNavigation,
           distanceInterval: 10,
@@ -350,6 +359,8 @@ export default function App() {
         setLocationTask(task);
       } catch (err) {
         console.log('Location tracking error', err);
+        Alert.alert('Error', 'Could not start location tracking. Please check location permissions.');
+        setIsAvailable(false);
       }
     })();
   }
@@ -667,12 +678,12 @@ export default function App() {
             <TouchableOpacity
               style={[styles.secondaryBtn, { backgroundColor: '#D03A27', borderColor: '#191A16' }]}
               onPress={() => {
-                setSelectedRole('tow');
+                setSelectedRole('tow_provider');
                 setView('regForm');
               }}
             >
               <Text style={[styles.secondaryBtnText, { color: '#FFF' }]} numberOfLines={1}>
-                JOIN AS TOW SERVICE
+                JOIN AS TOW PROVIDER
               </Text>
             </TouchableOpacity>
 
@@ -784,13 +795,13 @@ export default function App() {
             <TouchableOpacity
               style={styles.roleCard}
               onPress={() => {
-                setSelectedRole('tow');
+                setSelectedRole('tow_provider');
                 setView('regForm');
               }}
             >
               <Text style={styles.roleIcon}>🚨</Text>
               <Text style={styles.roleCardTitle} numberOfLines={1} adjustsFontSizeToFit>
-                TOW SERVICE
+                TOW PROVIDER
               </Text>
               <Text style={styles.roleCardDesc}>Provide towing and recovery services</Text>
             </TouchableOpacity>
@@ -836,7 +847,7 @@ export default function App() {
         {view === 'regForm' && (
           <View style={styles.card}>
             <Text style={styles.formTitle} numberOfLines={1}>
-              {selectedRole === 'mechanic' ? 'MECHANIC REGISTRATION' : selectedRole === 'tow' ? 'TOW SERVICE REGISTRATION' : 'DRIVER REGISTRATION'}
+              {selectedRole === 'mechanic' ? 'MECHANIC REGISTRATION' : selectedRole === 'tow_provider' ? 'TOW PROVIDER REGISTRATION' : 'DRIVER REGISTRATION'}
             </Text>
             <Text style={styles.inputLabel}>FULL NAME / SHOP NAME</Text>
             <TextInput style={styles.input} placeholder="e.g. Ahmed Auto" value={name} onChangeText={setName} />
@@ -853,7 +864,7 @@ export default function App() {
             <Text style={styles.inputLabel}>PASSWORD</Text>
             <TextInput style={styles.input} placeholder="********" secureTextEntry value={password} onChangeText={setPassword} />
             
-            {(selectedRole === 'mechanic' || selectedRole === 'tow') && (
+            {(selectedRole === 'mechanic' || selectedRole === 'tow_provider') && (
               <>
                 <Text style={styles.inputLabel}>PER KM CHARGE (RS)</Text>
                 <TextInput
