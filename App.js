@@ -38,6 +38,13 @@ import {
   subscribeToMessages,
   subscribeToJobChanges,
   subscribeToBids,
+  fetchTowingJobs,
+  placeTowBid,
+  fetchTowBidsByProvider,
+  fetchTowProviderHistory,
+  addFleetVehicle,
+  fetchFleetVehicles,
+  deleteFleetVehicle,
 } from './jobs';
 import { registerForLocalNotifications, notifyLocal } from './notifications';
 import { haversineKm, formatDistance } from './utils';
@@ -75,6 +82,17 @@ export default function App() {
   const [mechanicProfile, setMechanicProfile] = useState(null);
   const [perKmCharge, setPerKmCharge] = useState('');
   const [bidPerKmCharge, setBidPerKmCharge] = useState({});
+
+  // Tow Provider state
+  const [towTab, setTowTab] = useState('radar');
+  const [towOpenJobs, setTowOpenJobs] = useState([]);
+  const [towActiveContracts, setTowActiveContracts] = useState([]);
+  const [towHistory, setTowHistory] = useState([]);
+  const [towFleet, setTowFleet] = useState([]);
+  const [towBidPrice, setTowBidPrice] = useState({});
+  const [towBidEta, setTowBidEta] = useState({});
+  const [selectedFleetVehicle, setSelectedFleetVehicle] = useState('');
+  const [newFleetVehicle, setNewFleetVehicle] = useState({ type: 'flatbed', name: '' });
   const [myRequests, setMyRequests] = useState([]);
   const [editingJobId, setEditingJobId] = useState(null);
 
@@ -213,8 +231,9 @@ export default function App() {
     setRefreshing(true);
     if (session?.user) {
       if (profile?.role === 'mechanic') await loadMechanicData(session.user.id);
+      else if (profile?.role === 'tow' || profile?.role === 'tow_provider') await loadTowData(session.user.id);
       else await loadDriverData(session.user.id);
-      if (appTab === 'history') await loadHistory();
+      if (appTab === 'history' || towTab === 'history') await loadHistory();
     }
     setRefreshing(false);
   }
@@ -240,10 +259,23 @@ export default function App() {
     }
   }
 
+  async function loadTowData(userId) {
+    try {
+      setTowOpenJobs(await fetchTowingJobs());
+      setTowActiveContracts(await fetchTowBidsByProvider(userId));
+      setTowHistory(await fetchTowProviderHistory(userId));
+      setTowFleet(await fetchFleetVehicles(userId));
+    } catch (e) {
+      console.log(e);
+    }
+  }
+
   async function loadHistory() {
     try {
       if (profile?.role === 'mechanic') {
         setMechanicHistory(await fetchMechanicHistory(session.user.id));
+      } else if (profile?.role === 'tow' || profile?.role === 'tow_provider') {
+        setTowHistory(await fetchTowProviderHistory(session.user.id));
       } else {
         setJobHistory(await fetchJobHistory(session.user.id));
       }
@@ -253,8 +285,8 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (view === 'app' && appTab === 'history') loadHistory();
-  }, [appTab, view]);
+    if (view === 'app' && (appTab === 'history' || towTab === 'history')) loadHistory();
+  }, [appTab, towTab, view]);
 
   async function handleLogin() {
     if (!email.trim() || !password) return Alert.alert('Error', 'Please enter email and password.');
@@ -564,6 +596,65 @@ export default function App() {
   function callNumber(phoneNumber) {
     if (!phoneNumber) return Alert.alert('Unavailable', 'No phone number on file.');
     Linking.openURL(`tel:${phoneNumber}`);
+  }
+
+  // ---------- Tow Provider Functions ----------
+  async function handleTowPlaceBid(jobId) {
+    const price = towBidPrice[jobId];
+    const eta = towBidEta[jobId];
+    if (!price || !eta) return Alert.alert('Error', 'Please enter price and ETA.');
+    if (!selectedFleetVehicle) return Alert.alert('Error', 'Please select a vehicle from your fleet.');
+    try {
+      await placeTowBid({ 
+        job_id: jobId, 
+        tow_provider_id: session.user.id, 
+        price, 
+        eta,
+        fleet_vehicle_id: selectedFleetVehicle 
+      });
+      Alert.alert('Bid Placed', 'Tow bid sent to driver.');
+      loadTowData(session.user.id);
+      setTowBidPrice({});
+      setTowBidEta({});
+      setSelectedFleetVehicle('');
+    } catch (err) {
+      Alert.alert('Error', err.message);
+    }
+  }
+
+  async function handleTowStatusUpdate(jobId, status) {
+    try {
+      await updateJobStatus(jobId, status);
+      Alert.alert('Status Updated', `Tow job marked as ${status.replace('_', ' ')}.`);
+      loadTowData(session.user.id);
+    } catch (err) {
+      Alert.alert('Error', err.message);
+    }
+  }
+
+  async function handleAddFleetVehicle() {
+    if (!newFleetVehicle.name.trim()) return Alert.alert('Error', 'Please enter vehicle name or plate.');
+    try {
+      await addFleetVehicle({
+        tow_provider_id: session.user.id,
+        vehicle_type: newFleetVehicle.type,
+        name: newFleetVehicle.name.trim(),
+      });
+      setNewFleetVehicle({ type: 'flatbed', name: '' });
+      loadTowData(session.user.id);
+      Alert.alert('Success', 'Vehicle added to fleet.');
+    } catch (err) {
+      Alert.alert('Error', err.message);
+    }
+  }
+
+  async function handleDeleteFleetVehicle(vehicleId) {
+    try {
+      await deleteFleetVehicle(vehicleId);
+      loadTowData(session.user.id);
+    } catch (err) {
+      Alert.alert('Error', err.message);
+    }
   }
 
   // ---------- Derived: sorted/filtered open jobs for mechanic ----------
@@ -1358,6 +1449,212 @@ export default function App() {
                       ) : (
                         <Text style={{ color: '#666', fontStyle: 'italic', marginTop: 6 }}>Not rated yet</Text>
                       )}
+                    </View>
+                  ))
+                )}
+              </View>
+            )}
+          </View>
+        )}
+
+        {/* ================= TOW PROVIDER DASHBOARD ================= */}
+        {view === 'app' && (profile?.role === 'tow' || profile?.role === 'tow_provider') && (
+          <View style={{ width: '100%' }}>
+            <Text style={styles.appTitle}>TOW PROVIDER DASHBOARD</Text>
+
+            {/* AVAILABILITY TOGGLE */}
+            <View style={styles.availabilityCard}>
+              <Text style={styles.availabilityTitle}>RADAR STATUS</Text>
+              <TouchableOpacity
+                style={[styles.availabilityBtn, isAvailable && styles.availabilityBtnActive]}
+                onPress={toggleAvailability}
+              >
+                <Text style={[styles.availabilityText, isAvailable && styles.availabilityTextActive]}>
+                  {isAvailable ? '🟢 AVAILABLE NOW' : '🔴 GO OFFLINE'}
+                </Text>
+              </TouchableOpacity>
+              {isAvailable && (
+                <Text style={styles.availabilitySubText}>📍 Sharing location with drivers nearby</Text>
+              )}
+            </View>
+
+            <View style={styles.tabRow}>
+              <TouchableOpacity style={[styles.tabBtn, towTab === 'radar' && styles.tabBtnActive]} onPress={() => setTowTab('radar')}>
+                <Text style={[styles.tabBtnText, towTab === 'radar' && styles.tabBtnTextActive]}>RADAR</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.tabBtn, towTab === 'fleet' && styles.tabBtnActive]} onPress={() => setTowTab('fleet')}>
+                <Text style={[styles.tabBtnText, towTab === 'fleet' && styles.tabBtnTextActive]}>FLEET</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.tabBtn, towTab === 'contracts' && styles.tabBtnActive]} onPress={() => setTowTab('contracts')}>
+                <Text style={[styles.tabBtnText, towTab === 'contracts' && styles.tabBtnTextActive]}>CONTRACTS</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.tabBtn, towTab === 'history' && styles.tabBtnActive]} onPress={() => setTowTab('history')}>
+                <Text style={[styles.tabBtnText, towTab === 'history' && styles.tabBtnTextActive]}>HISTORY</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* RADAR TAB */}
+            {towTab === 'radar' && (
+              <View>
+                <Text style={styles.sectionHeading}>TOWING RADAR 📡</Text>
+                {towOpenJobs.length === 0 ? (
+                  <Text style={styles.emptyHint}>Scanning for towing requests...</Text>
+                ) : (
+                  towOpenJobs.map((j) => (
+                    <View key={j.id} style={styles.jobCard}>
+                      <View style={styles.jobTop}>
+                        <Text style={styles.jobVeh}>{j.vehicle?.toUpperCase()}</Text>
+                        <Text style={{ color: '#D03A27', fontSize: 12, fontWeight: 'bold' }}>🚨 TOW REQUIRED</Text>
+                      </View>
+                      <Text style={styles.jobDesc}>{j.description}</Text>
+                      <Text style={styles.jobLoc}>📍 {j.location?.label}</Text>
+                      {!!j.photo_url && <Image source={{ uri: j.photo_url }} style={styles.jobPhoto} />}
+
+                      <Text style={styles.inputLabel}>SELECT VEHICLE</Text>
+                      <ScrollView horizontal style={{ marginBottom: 10 }}>
+                        {towFleet.filter(v => v.is_available).map((v) => (
+                          <TouchableOpacity key={v.id} style={[styles.vehBtn, selectedFleetVehicle === v.id && styles.vehBtnActive]} onPress={() => setSelectedFleetVehicle(v.id)}>
+                            <Text style={[styles.vehBtnText, selectedFleetVehicle === v.id && styles.vehBtnTextActive]}>
+                              {v.vehicle_type?.toUpperCase()?.replace('_', ' ')}
+                            </Text>
+                            <Text style={[styles.vehBtnText, selectedFleetVehicle === v.id && styles.vehBtnTextActive, { fontSize: 10 }]}>
+                              {v.name}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </ScrollView>
+
+                      <View style={styles.bidRow}>
+                        <TextInput style={styles.bidInput} placeholder="Rs" placeholderTextColor="#777" keyboardType="numeric" onChangeText={(val) => setTowBidPrice({ ...towBidPrice, [j.id]: val })} />
+                        <TextInput style={styles.bidInput} placeholder="Min" placeholderTextColor="#777" keyboardType="numeric" onChangeText={(val) => setTowBidEta({ ...towBidEta, [j.id]: val })} />
+                        <TouchableOpacity style={styles.bidBtn} onPress={() => handleTowPlaceBid(j.id)}>
+                          <Text style={styles.bidBtnText}>DISPATCH</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={[styles.bidBtn, { backgroundColor: '#B03A22' }]} onPress={() => {
+                          setTowOpenJobs(prev => prev.filter(job => job.id !== j.id));
+                          Alert.alert('Ignored', 'Request removed from radar.');
+                        }}>
+                          <Text style={styles.bidBtnText}>IGNORE</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  ))
+                )}
+              </View>
+            )}
+
+            {/* FLEET TAB */}
+            {towTab === 'fleet' && (
+              <View>
+                <Text style={styles.sectionHeading}>YOUR FLEET</Text>
+                <View style={styles.darkCard}>
+                  <Text style={styles.darkCardTitle}>ADD VEHICLE</Text>
+                  <Text style={styles.darkLabel}>VEHICLE TYPE</Text>
+                  <View style={styles.vehToggleRow}>
+                    {['flatbed', 'hook_and_chain', 'wheel_lift', 'integrated'].map((type) => (
+                      <TouchableOpacity key={type} style={[styles.vehBtn, newFleetVehicle.type === type && styles.vehBtnActive]} onPress={() => setNewFleetVehicle({ ...newFleetVehicle, type })}>
+                        <Text style={[styles.vehBtnText, newFleetVehicle.type === type && styles.vehBtnTextActive]}>{type.replace('_', ' ').toUpperCase()}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                  <Text style={styles.darkLabel}>VEHICLE NAME / PLATE</Text>
+                  <TextInput style={styles.darkInput} placeholder="e.g. FH-1234" value={newFleetVehicle.name} onChangeText={(val) => setNewFleetVehicle({ ...newFleetVehicle, name: val })} />
+                  <TouchableOpacity style={styles.primaryBtn} onPress={handleAddFleetVehicle}>
+                    <Text style={styles.primaryBtnText}>ADD TO FLEET</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {towFleet.length === 0 ? (
+                  <Text style={styles.emptyHint}>No vehicles in fleet. Add one above.</Text>
+                ) : (
+                  towFleet.map((v) => (
+                    <View key={v.id} style={styles.jobCard}>
+                      <View style={styles.jobTop}>
+                        <Text style={styles.jobVeh}>{v.vehicle_type?.replace('_', ' ')?.toUpperCase()}</Text>
+                        <Text style={[styles.jobPill, { color: v.is_available ? '#2F6B4F' : '#B03A22' }]}>
+                          {v.is_available ? 'AVAILABLE' : 'IN USE'}
+                        </Text>
+                      </View>
+                      <Text style={{ color: '#DAD8CC', fontSize: 14 }}>{v.name}</Text>
+                      <TouchableOpacity style={[styles.statusBtn, { backgroundColor: '#B03A22', marginTop: 10 }]} onPress={() => handleDeleteFleetVehicle(v.id)}>
+                        <Text style={styles.statusBtnText}>REMOVE</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ))
+                )}
+              </View>
+            )}
+
+            {/* ACTIVE CONTRACTS TAB */}
+            {towTab === 'contracts' && (
+              <View>
+                <Text style={styles.sectionHeading}>ACTIVE CONTRACTS</Text>
+                {towActiveContracts.length === 0 ? (
+                  <Text style={styles.emptyHint}>No active tow contracts.</Text>
+                ) : (
+                  towActiveContracts.map((b) => (
+                    <View key={b.id} style={styles.jobCard}>
+                      <Text style={styles.jobVeh}>{b.job?.vehicle?.toUpperCase()}</Text>
+                      <Text style={{ color: '#F2A71B', fontSize: 13 }}>Rs {b.price} - {b.eta} min</Text>
+                      <Text style={{ color: '#2F6B4F', marginTop: 4, fontWeight: 'bold' }}>Status: {b.job?.status?.replace('_', ' ')?.toUpperCase()}</Text>
+                      <Text style={{ color: '#AAA', fontSize: 12, marginTop: 4 }}>Driver: {b.job?.driver?.name}</Text>
+                      {b.fleet_vehicle && <Text style={{ color: '#888', fontSize: 12 }}>Vehicle: {b.fleet_vehicle.name}</Text>}
+
+                      <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
+                        <TouchableOpacity style={[styles.statusBtn, { backgroundColor: '#3E4F60' }]} onPress={() => callNumber(b.job?.driver?.phone)}>
+                          <Text style={styles.statusBtnText}>Call</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={[styles.statusBtn, { backgroundColor: '#2F6B4F' }]} onPress={() => openChat(b.job_id, b.job?.driver?.name)}>
+                          <Text style={styles.statusBtnText}>Chat</Text>
+                        </TouchableOpacity>
+                      </View>
+
+                      {b.job?.status === 'assigned' && (
+                        <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
+                          <TouchableOpacity style={[styles.statusBtn, { backgroundColor: '#3E4F60' }]} onPress={() => handleTowStatusUpdate(b.job_id, 'en_route')}>
+                            <Text style={styles.statusBtnText}>EN ROUTE</Text>
+                          </TouchableOpacity>
+                        </View>
+                      )}
+                      {b.job?.status === 'en_route' && (
+                        <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
+                          <TouchableOpacity style={[styles.statusBtn, { backgroundColor: '#2F6B4F' }]} onPress={() => handleTowStatusUpdate(b.job_id, 'arrived_at_pickup')}>
+                            <Text style={styles.statusBtnText}>ARRIVED</Text>
+                          </TouchableOpacity>
+                        </View>
+                      )}
+                      {b.job?.status === 'arrived_at_pickup' && (
+                        <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
+                          <TouchableOpacity style={[styles.statusBtn, { backgroundColor: '#3E4F60' }]} onPress={() => handleTowStatusUpdate(b.job_id, 'in_transit')}>
+                            <Text style={styles.statusBtnText}>IN TRANSIT</Text>
+                          </TouchableOpacity>
+                        </View>
+                      )}
+                      {b.job?.status === 'in_transit' && (
+                        <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
+                          <TouchableOpacity style={[styles.statusBtn, { backgroundColor: '#2F6B4F' }]} onPress={() => handleTowStatusUpdate(b.job_id, 'completed')}>
+                            <Text style={styles.statusBtnText}>TOW COMPLETED</Text>
+                          </TouchableOpacity>
+                        </View>
+                      )}
+                    </View>
+                  ))
+                )}
+              </View>
+            )}
+
+            {/* HISTORY TAB */}
+            {towTab === 'history' && (
+              <View>
+                <Text style={styles.sectionHeading}>TOW HISTORY</Text>
+                {towHistory.length === 0 ? (
+                  <Text style={styles.emptyHint}>No completed tow jobs yet.</Text>
+                ) : (
+                  towHistory.map((b) => (
+                    <View key={b.id} style={styles.jobCard}>
+                      <Text style={styles.jobVeh}>{b.job?.vehicle?.toUpperCase()}</Text>
+                      <Text style={{ color: '#F2A71B', fontSize: 13 }}>Rs {b.price} - {b.eta} min</Text>
+                      <Text style={{ color: '#AAA', fontSize: 12, marginTop: 4 }}>Driver: {b.job?.driver?.name}</Text>
                     </View>
                   ))
                 )}
